@@ -1,21 +1,29 @@
-# Mochi Pet 🍡
+# 🍡 Mochi Pet
 
-A cute interactive blob pet that lives in your browser. Its eyes follow your cursor, and it squishes when you poke it.
+一个住在浏览器里的软糯团子宠物。眼睛会跟随鼠标转动，戳它会变形弹跳。
 
-**[Live Demo](https://is-cau.github.io/mochi-pet/)**
+**[在线体验](https://is-cau.github.io/mochi-pet/)**
 
-### Features
+## 玩法
 
-- Eye tracking — pupils follow your mouse in real-time
-- Squish & stretch — body deforms on hover, squishes on click
-- Idle animations — breathing, blinking, gentle bouncing
-- Color themes — 5 colors to choose from
-- Mobile-friendly — touch support included
+- **移动鼠标** — 团子会微微倾斜靠近光标，眼睛始终追随
+- **贴近团子** — 身体会挤压变形，侧向膨胀
+- **点击团子** — 触发一次完整的挤扁 + 回弹震动 + 闭眼
+- **底部按钮** — 切换 5 种颜色主题（粉 / 绿 / 紫 / 橙 / 蓝）
 
-### Tech
+## 特性
 
-Single self-contained HTML file. Canvas 2D, no frameworks, no dependencies.
+- 48 段贝塞尔曲线构成的柔软轮廓，变形自然
+- 眨眼动画含缓入缓出，随机间隔 2~6 秒
+- 呼吸波动 + 身体弹跳 + 漂浮粒子，闲置也生动
+- 挤压时嘴巴从微笑变成惊讶 O 形
+- 虹膜 + 双层眼神光，眼睛看起来有神
+- HiDPI 高清渲染，移动端触摸支持
 
-### Run Locally
+## 技术
 
-Open `index.html` in any browser.
+单个 HTML 文件，纯 Canvas 2D 手绘，零依赖。60fps 动画循环通过 `requestAnimationFrame` 驱动。
+
+## 本地运行
+
+浏览器打开 `index.html` 即可。

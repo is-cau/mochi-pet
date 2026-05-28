@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cute Blob Pet</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1a1a2e;
+            font-family: sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #colorBtns {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 12px;
+            z-index: 10;
+        }
+        #colorBtns button {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.3);
+            cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s;
+            outline: none;
+        }
+        #colorBtns button:hover {
+            transform: scale(1.2);
+            border-color: rgba(255,255,255,0.8);
+        }
+        #colorBtns button.active {
+            border-color: #fff;
+            box-shadow: 0 0 12px rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="mainCanvas"></canvas>
+    <div id="colorBtns">
+        <button style="background:hsl(340,70%,70%)" data-hue="340" class="active"></button>
+        <button style="background:hsl(160,60%,65%)" data-hue="160"></button>
+        <button style="background:hsl(270,60%,75%)" data-hue="270"></button>
+        <button style="background:hsl(25,80%,70%)" data-hue="25"></button>
+        <button style="background:hsl(200,70%,70%)" data-hue="200"></button>
+    </div>
+
+    <script>
+    (function() {
+        // ===== CANVAS SETUP =====
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let W, H, dpr;
+
+        function resizeCanvas() {
+            dpr = window.devicePixelRatio || 1;
+            W = window.innerWidth;
+            H = window.innerHeight;
+            canvas.width = W * dpr;
+            canvas.height = H * dpr;
+            canvas.style.width = W + 'px';
+            canvas.style.height = H + 'px';
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            // Re-center body on resize
+            if (body) {
+                body.x = W / 2;
+                body.y = H / 2 - 20;
+            }
+        }
+
+        // ===== MATH HELPERS =====
+        function lerp(a, b, t) { return a + (b - a) * t; }
+        function lerpAngle(a, b, t) {
+            let d = b - a;
+            while (d > 180) d -= 360;
+            while (d < -180) d += 360;
+            return a + d * t;
+        }
+        function smoothstep(e0, e1, x) {
+            const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+            return t * t * (3 - 2 * t);
+        }
+        function dist(x1, y1, x2, y2) {
+            var dx = x2 - x1, dy = y2 - y1;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+        function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+        function safeMin(v, minVal) { return isNaN(v) || v < minVal ? minVal : v; }
+
+        // ===== STATE =====
+        var body = {
+            x: W / 2,
+            y: H / 2 - 20,
+            hue: 340,
+            targetHue: 340,
+            pupilLX: 0, pupilLY: 0,
+            pupilRX: 0, pupilRY: 0,
+            recoilAmplitude: 0,
+            squishIntensity: 0
+        };
+
+        var mouse = { x: W / 2, y: H / 2 - 20, active: false };
+
+        var blink = {
+            state: 'idle',
+            progress: 0,
+            nextBlinkTime: 2 + Math.random() * 4,
+            eyeScaleY: 1
+        };
+
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        var timeAccum = 0;
+        var frameCount = 0;
+
+        // ===== INPUT HANDLERS =====
+        function updateMouseFromClient(clientX, clientY) {
+            var rect = canvas.getBoundingClientRect();
+            mouse.x = clientX - rect.left;
+            mouse.y = clientY - rect.top;
+            mouse.active = true;
+        }
+
+        canvas.addEventListener('mousemove', function(e) { updateMouseFromClient(e.clientX, e.clientY); });
+        canvas.addEventListener('mousedown', function(e) { updateMouseFromClient(e.clientX, e.clientY); });
+        canvas.addEventListener('mouseenter', function(e) { updateMouseFromClient(e.clientX, e.clientY); });
+        canvas.addEventListener('mouseleave', function() {
+            mouse.active = false;
+            body.recoilAmplitude = body.squishIntensity * 0.5;
+        });
+
+        canvas.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            updateMouseFromClient(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', function(e) {
+            e.preventDefault();
+            updateMouseFromClient(e.touches[0].clientX, e.touches[0].clientY);
+        }, { passive: false });
+
+        canvas.addEventListener('touchend', function() {
+            mouse.active = false;
+            body.recoilAmplitude = body.squishIntensity * 0.5;
+        });
+
+        // Click/tap to squish the blob
+        canvas.addEventListener('click', function(e) {
+            var rect = canvas.getBoundingClientRect();
+            var cx = e.clientX - rect.left;
+            var cy = e.clientY - rect.top;
+            var d = dist(body.x, body.y, cx, cy);
+            if (d < getBaseRadius() * 1.3) {
+                body.squishIntensity = 1;
+                body.recoilAmplitude = 15;
+                blink.state = 'closing';
+                blink.progress = 0;
+            }
+        });
+
+        // ===== COLOR BUTTONS =====
+        document.getElementById('colorBtns').addEventListener('click', function(e) {
+            if (e.target.tagName === 'BUTTON') {
+                body.targetHue = parseInt(e.target.dataset.hue);
+                var buttons = document.querySelectorAll('#colorBtns button');
+                for (var b = 0; b < buttons.length; b++) buttons[b].classList.remove('active');
+                e.target.classList.add('active');
+            }
+        });
+
+        // ===== BLINK STATE MACHINE =====
+        function updateBlink(time) {
+            switch (blink.state) {
+                case 'idle':
+                    if (time >= blink.nextBlinkTime) {
+                        blink.state = 'closing';
+                        blink.progress = 0;
+                    }
+                    break;
+                case 'closing':
+                    blink.progress += 0.06;
+                    blink.eyeScaleY = 1 - easeInQuad(Math.min(blink.progress, 1)) * 0.9;
+                    if (blink.progress >= 1) {
+                        blink.state = 'closed';
+                        blink.progress = 0;
+                        blink.eyeScaleY = 0.1;
+                    }
+                    break;
+                case 'closed':
+                    blink.progress += 0.03;
+                    if (blink.progress >= 1) {
+                        blink.state = 'opening';
+                        blink.progress = 0;
+                    }
+                    break;
+                case 'opening':
+                    blink.progress += 0.07;
+                    blink.eyeScaleY = 0.1 + easeOutQuad(Math.min(blink.progress, 1)) * 0.9;
+                    if (blink.progress >= 1) {
+                        blink.state = 'idle';
+                        blink.eyeScaleY = 1;
+                        blink.progress = 0;
+                        blink.nextBlinkTime = time + 2 + Math.random() * 4;
+                    }
+                    break;
+            }
+            // Hard clamp — never allow negative or extreme values
+            blink.eyeScaleY = clamp(blink.eyeScaleY, 0.08, 1);
+        }
+
+        function easeInQuad(t) { return t * t; }
+        function easeOutQuad(t) { return 1 - (1 - t) * (1 - t); }
+
+        // ===== BODY DEFORMATION =====
+        function getBaseRadius() {
+            return clamp(Math.min(W, H) * 0.15, 60, 150);
+        }
+
+        function computeBodyPoints(time) {
+            var baseR = getBaseRadius();
+            var numSegs = 48;
+            var points = [];
+            var prevSquish = body.squishIntensity;
+            var d = dist(body.x, body.y, mouse.x, mouse.y);
+
+            // Update squish intensity
+            var squishZone = d < 100;
+            var attractZone = d < 250 && !squishZone;
+            var newSquish = 0;
+            if (mouse.active && squishZone) newSquish = smoothstep(100, 20, d);
+            else if (mouse.active && attractZone) newSquish = smoothstep(250, 100, d) * 0.3;
+
+            body.squishIntensity = lerp(body.squishIntensity, newSquish, 0.1);
+
+            // Trigger recoil when squish releases
+            if (prevSquish > 0.15 && body.squishIntensity < 0.05) {
+                body.recoilAmplitude = prevSquish * 18;
+            }
+
+            // Decay recoil & clamp
+            body.recoilAmplitude = clamp(body.recoilAmplitude * 0.9, 0, 30);
+
+            var mouseAngle = Math.atan2(mouse.y - body.y, mouse.x - body.x);
+
+            for (var i = 0; i < numSegs; i++) {
+                var theta = (i / numSegs) * Math.PI * 2;
+
+                // Breathing — use wrapped time for precision
+                var tWrapped = time % 100;
+                var rOffset = Math.sin(tWrapped * 2.0 + theta * 1.5) * 3.0;
+
+                // Recoil bounce
+                rOffset += Math.sin(tWrapped * 14 + theta * 2) * body.recoilAmplitude;
+
+                // Mouse deformation (only when mouse is active on canvas)
+                if (mouse.active && d < 250) {
+                    var alignment = Math.cos(theta - mouseAngle);
+
+                    if (d < 100) {
+                        var squish = body.squishIntensity;
+                        rOffset -= Math.max(0, alignment) * squish * 32;
+                        rOffset += Math.abs(Math.sin(theta - mouseAngle)) * squish * 18;
+                        rOffset -= Math.max(0, -alignment) * squish * 6;
+                    } else {
+                        rOffset += alignment * body.squishIntensity * 40;
+                    }
+                }
+
+                // Clamp offset to prevent extreme distortion
+                rOffset = clamp(rOffset, -baseR * 0.5, baseR * 0.5);
+                var r = baseR + rOffset;
+
+                points.push({
+                    x: body.x + Math.cos(theta) * r,
+                    y: body.y + Math.sin(theta) * r
+                });
+            }
+            return points;
+        }
+
+        // ===== EYE TRACKING =====
+        function computePupilTarget(eyeX, eyeY, eyeR, pupilR) {
+            if (!mouse.active) return { x: eyeX, y: eyeY };
+
+            var dx = mouse.x - eyeX;
+            var dy = mouse.y - eyeY;
+            var distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance < 1) return { x: eyeX, y: eyeY };
+
+            var normX = dx / distance;
+            var normY = dy / distance;
+            var maxOffset = Math.max(0, eyeR - pupilR - 2);
+
+            if (maxOffset <= 0) return { x: eyeX, y: eyeY };
+
+            var t = clamp(distance / (maxOffset * 2.5), 0, 1);
+            var offset = maxOffset * smoothstep(0, 1, t);
+
+            return {
+                x: eyeX + normX * offset,
+                y: eyeY + normY * offset
+            };
+        }
+
+        // ===== RENDERING =====
+        function safeEllipse(cx, cy, rx, ry) {
+            rx = safeMin(rx, 0.5);
+            ry = safeMin(ry, 0.5);
+            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        }
+
+        function safeArc(cx, cy, r) {
+            r = safeMin(r, 0.5);
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        }
+
+        function drawBodyShadow() {
+            ctx.save();
+            ctx.globalAlpha = 0.12;
+            var baseR = getBaseRadius();
+            var shadowY = body.y + baseR * 1.1;
+            var sx = baseR * 0.8;
+            var sy = Math.max(1, baseR * 0.15 * (1 - body.squishIntensity * 0.4));
+            ctx.beginPath();
+            safeEllipse(body.x, shadowY, sx, sy);
+            ctx.fillStyle = '#000';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawSmoothPath(points) {
+            var n = points.length;
+            ctx.beginPath();
+            ctx.moveTo((points[0].x + points[n - 1].x) / 2, (points[0].y + points[n - 1].y) / 2);
+            for (var i = 0; i < n; i++) {
+                var p = points[i];
+                var pNext = points[(i + 1) % n];
+                var midX = (p.x + pNext.x) / 2;
+                var midY = (p.y + pNext.y) / 2;
+                ctx.quadraticCurveTo(p.x, p.y, midX, midY);
+            }
+            ctx.closePath();
+        }
+
+        function drawBody(points) {
+            var baseR = getBaseRadius();
+
+            // Soft glow halo
+            ctx.save();
+            ctx.globalAlpha = 0.08;
+            var haloGrad = ctx.createRadialGradient(body.x, body.y, baseR * 0.85, body.x, body.y, baseR * 1.15);
+            haloGrad.addColorStop(0, 'hsla(' + body.hue + ', 60%, 75%, 0)');
+            haloGrad.addColorStop(1, 'hsla(' + body.hue + ', 60%, 75%, 0.6)');
+            drawSmoothPath(points);
+            ctx.fillStyle = haloGrad;
+            ctx.fill();
+            ctx.restore();
+
+            // Main body with 3D gradient
+            var bodyGrad = ctx.createRadialGradient(
+                body.x - baseR * 0.3, body.y - baseR * 0.35, baseR * 0.1,
+                body.x, body.y, baseR * 1.05
+            );
+            var sat = 65;
+            bodyGrad.addColorStop(0, 'hsl(' + body.hue + ', ' + sat + '%, 88%)');
+            bodyGrad.addColorStop(0.35, 'hsl(' + body.hue + ', ' + sat + '%, 75%)');
+            bodyGrad.addColorStop(0.75, 'hsl(' + body.hue + ', ' + sat + '%, 58%)');
+            bodyGrad.addColorStop(1, 'hsl(' + body.hue + ', ' + sat + '%, 42%)');
+
+            drawSmoothPath(points);
+            ctx.fillStyle = bodyGrad;
+            ctx.fill();
+
+            ctx.strokeStyle = 'hsl(' + body.hue + ', 45%, 35%)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        function drawHighlight(points) {
+            var baseR = getBaseRadius();
+            ctx.save();
+            ctx.globalAlpha = 0.25;
+            var hlGrad = ctx.createRadialGradient(
+                body.x - baseR * 0.35, body.y - baseR * 0.4, baseR * 0.05,
+                body.x - baseR * 0.15, body.y - baseR * 0.2, baseR * 0.6
+            );
+            hlGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
+            hlGrad.addColorStop(1, 'rgba(255,255,255,0)');
+            drawSmoothPath(points);
+            ctx.fillStyle = hlGrad;
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawEye(eyeX, eyeY, eyeR, pupilR, pupilX, pupilY, scaleY) {
+            scaleY = clamp(scaleY, 0.08, 1);
+            eyeR = Math.max(eyeR, 5);
+            pupilR = Math.max(pupilR, 3);
+
+            // Eye white
+            ctx.save();
+            ctx.beginPath();
+            var eyeRY = Math.max(0.5, eyeR * 1.05 * scaleY);
+            safeEllipse(eyeX, eyeY, eyeR, eyeRY);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.strokeStyle = 'hsl(' + body.hue + ', 30%, 30%)';
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Clip to eye interior for pupil
+            ctx.save();
+            ctx.beginPath();
+            var clipRX = Math.max(1, eyeR - 1);
+            var clipRY = Math.max(1, eyeR * 1.05 * scaleY - 1);
+            safeEllipse(eyeX, eyeY, clipRX, clipRY);
+            ctx.clip();
+
+            // Iris
+            var irisR = pupilR + 5;
+            if (irisR > 0) {
+                ctx.beginPath();
+                safeArc(pupilX, pupilY, irisR);
+                var irisGrad = ctx.createRadialGradient(pupilX, pupilY, pupilR, pupilX, pupilY, irisR);
+                irisGrad.addColorStop(0, '#1a1a1a');
+                irisGrad.addColorStop(0.6, '#3a2a1a');
+                irisGrad.addColorStop(1, '#5a4a3a');
+                ctx.fillStyle = irisGrad;
+                ctx.fill();
+            }
+
+            // Pupil
+            ctx.beginPath();
+            safeArc(pupilX, pupilY, pupilR);
+            ctx.fillStyle = '#111';
+            ctx.fill();
+
+            // Catchlight
+            var hlR = pupilR * 0.35;
+            if (hlR > 0.3) {
+                ctx.beginPath();
+                safeArc(pupilX - pupilR * 0.3, pupilY - pupilR * 0.35, hlR);
+                ctx.fillStyle = '#fff';
+                ctx.fill();
+
+                // Secondary catchlight
+                var hl2R = pupilR * 0.15;
+                ctx.beginPath();
+                safeArc(pupilX + pupilR * 0.25, pupilY + pupilR * 0.2, hl2R);
+                ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                ctx.fill();
+            }
+
+            ctx.restore(); // unclip
+            ctx.restore();
+        }
+
+        function drawBlush(eyeX, eyeY, side) {
+            ctx.save();
+            var bx = eyeX + side * 20;
+            var by = eyeY + 8;
+            ctx.globalAlpha = 0.25;
+            ctx.beginPath();
+            safeEllipse(bx, by, 10, 6);
+            ctx.fillStyle = '#ff8888';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawMouth() {
+            var baseR = getBaseRadius();
+            var mouthY = body.y + baseR * 0.15;
+
+            ctx.save();
+            ctx.strokeStyle = 'hsl(' + body.hue + ', 30%, 30%)';
+            ctx.lineWidth = 2.5;
+            ctx.lineCap = 'round';
+
+            if (body.squishIntensity > 0.3) {
+                var oSize = 5 + body.squishIntensity * 10;
+                ctx.beginPath();
+                safeEllipse(body.x, mouthY + 5, oSize, oSize * 0.8);
+                ctx.fillStyle = 'hsl(' + body.hue + ', 20%, 20%)';
+                ctx.fill();
+            } else {
+                ctx.beginPath();
+                ctx.arc(body.x, mouthY - 2, 8, 0.15 * Math.PI, 0.85 * Math.PI);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawParticles(time) {
+            ctx.save();
+            var baseR = getBaseRadius();
+            var count = 6;
+            var tWrapped = time % 100;
+
+            for (var i = 0; i < count; i++) {
+                var angle = (i / count) * Math.PI * 2 + tWrapped * 0.3;
+                var r = baseR * 1.25 + Math.sin(tWrapped * 1.7 + i) * 15;
+                var px = body.x + Math.cos(angle) * r;
+                var py = body.y + Math.sin(angle) * r * 0.6;
+                var alpha = 0.10 + Math.sin(tWrapped * 2 + i) * 0.06;
+                var size = safeMin(3 + Math.sin(tWrapped * 3 + i) * 2, 0.5);
+
+                ctx.globalAlpha = alpha;
+                ctx.beginPath();
+                safeArc(px, py, size);
+                ctx.fillStyle = 'hsl(' + body.hue + ', 70%, 80%)';
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // ===== MAIN LOOP =====
+        function safeRender() {
+            ctx.clearRect(0, 0, W, H);
+
+            var baseR = getBaseRadius();
+
+            // Background ambient glow
+            var glowGrad = ctx.createRadialGradient(body.x, body.y, baseR * 0.5, body.x, body.y, baseR * 2.2);
+            glowGrad.addColorStop(0, 'hsla(' + body.hue + ', 60%, 60%, 0.08)');
+            glowGrad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = glowGrad;
+            ctx.fillRect(0, 0, W, H);
+
+            drawParticles(timeAccum);
+
+            var bodyPoints = computeBodyPoints(timeAccum);
+
+            drawBodyShadow();
+            drawBody(bodyPoints);
+            drawHighlight(bodyPoints);
+
+            // Eye positions
+            var eyeOffsetX = baseR * 0.28;
+            var eyeOffsetY = baseR * 0.1;
+            var eyeR = Math.max(5, baseR * 0.22);
+            var pupilR = Math.max(2, baseR * 0.11);
+
+            var leftEyeX = body.x - eyeOffsetX;
+            var rightEyeX = body.x + eyeOffsetX;
+            var eyeY = body.y - eyeOffsetY;
+
+            var leftTarget = computePupilTarget(leftEyeX, eyeY, eyeR, pupilR);
+            var rightTarget = computePupilTarget(rightEyeX, eyeY, eyeR, pupilR);
+
+            var sf = 0.12;
+            body.pupilLX = lerp(body.pupilLX, leftTarget.x, sf);
+            body.pupilLY = lerp(body.pupilLY, leftTarget.y, sf);
+            body.pupilRX = lerp(body.pupilRX, rightTarget.x, sf);
+            body.pupilRY = lerp(body.pupilRY, rightTarget.y, sf);
+
+            drawEye(leftEyeX, eyeY, eyeR, pupilR, body.pupilLX, body.pupilLY, blink.eyeScaleY);
+            drawEye(rightEyeX, eyeY, eyeR, pupilR, body.pupilRX, body.pupilRY, blink.eyeScaleY);
+
+            drawBlush(leftEyeX, eyeY, -1);
+            drawBlush(rightEyeX, eyeY, 1);
+            drawMouth();
+        }
+
+        function animate(timestamp) {
+            // Skip huge jumps (e.g. tab hidden for hours → timestamp delta is minutes)
+            var rawDt = (timestamp - (animate._lastTime || timestamp)) / 1000;
+            var dt = Math.min(rawDt, 0.1);
+            if (rawDt > 1.0) {
+                // Tab was backgrounded for >1s, reset time-sensitive state
+                blink.nextBlinkTime = timeAccum + 1 + Math.random() * 3;
+            }
+            animate._lastTime = timestamp;
+            timeAccum += dt;
+
+            // Prevent timeAccum from growing unbounded (preserve fractional precision)
+            if (timeAccum > 3600) timeAccum -= 3600;
+
+            frameCount++;
+
+            // Update body position
+            if (mouse.active) {
+                var dx = mouse.x - W / 2;
+                var dy = mouse.y - (H / 2 - 20);
+                var cursorDist = Math.sqrt(dx * dx + dy * dy);
+                var leanStrength = clamp(smoothstep(300, 50, cursorDist), 0, 1) * 0.08;
+                body.x = lerp(body.x, W / 2 + dx * leanStrength, 0.04);
+                body.y = lerp(body.y, H / 2 - 20 + dy * leanStrength, 0.04);
+            } else {
+                body.x = lerp(body.x, W / 2, 0.04);
+                body.y = lerp(body.y, H / 2 - 20, 0.04);
+            }
+
+            body.hue = lerpAngle(body.hue, body.targetHue, 0.02);
+            updateBlink(timeAccum);
+
+            // Wrapped render in try-catch to survive any isolated error
+            try {
+                safeRender();
+            } catch (e) {
+                // Silently recover — next frame will retry with fresh state
+                ctx.clearRect(0, 0, W, H);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        animate._lastTime = 0;
+        requestAnimationFrame(animate);
+    })();
+    </script>
+</body>
+</html>

@@ -86,6 +86,12 @@
             while (d < -180) d += 360;
             return a + d * t;
         }
+        function lerpAngleRad(a, b, t) {
+            var d = b - a;
+            while (d > Math.PI) d -= Math.PI * 2;
+            while (d < -Math.PI) d += Math.PI * 2;
+            return a + d * t;
+        }
         function smoothstep(e0, e1, x) {
             const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
             return t * t * (3 - 2 * t);
@@ -106,7 +112,8 @@
             pupilLX: 0, pupilLY: 0,
             pupilRX: 0, pupilRY: 0,
             recoilAmplitude: 0,
-            squishIntensity: 0
+            squishIntensity: 0,
+            deformAngle: -Math.PI / 2
         };
 
         var mouse = { x: W / 2, y: H / 2 - 20, active: false };
@@ -229,63 +236,63 @@
 
         function computeBodyPoints(time) {
             var baseR = getBaseRadius();
-            var numSegs = 48;
+            var numSegs = 72;
             var points = [];
             var prevSquish = body.squishIntensity;
             var d = dist(body.x, body.y, mouse.x, mouse.y);
+            var effectRange = baseR * 1.9;
+            var pressRange = baseR * 0.85;
 
-            // Update squish intensity
-            var squishZone = d < 100;
-            var attractZone = d < 250 && !squishZone;
-            var newSquish = 0;
-            if (mouse.active && squishZone) newSquish = smoothstep(100, 20, d);
-            else if (mouse.active && attractZone) newSquish = smoothstep(250, 100, d) * 0.3;
-
-            body.squishIntensity = lerp(body.squishIntensity, newSquish, 0.1);
-
-            // Trigger recoil when squish releases
-            if (prevSquish > 0.15 && body.squishIntensity < 0.05) {
-                body.recoilAmplitude = prevSquish * 18;
+            // Update deformation intensity with one low-pass value so body changes do not jump.
+            var targetSquish = 0;
+            if (mouse.active && d < pressRange) {
+                targetSquish = smoothstep(pressRange, baseR * 0.18, d);
+            } else if (mouse.active && d < effectRange) {
+                targetSquish = smoothstep(effectRange, pressRange, d) * 0.22;
             }
+            body.squishIntensity = lerp(body.squishIntensity, targetSquish, 0.14);
 
-            // Decay recoil & clamp
-            body.recoilAmplitude = clamp(body.recoilAmplitude * 0.9, 0, 30);
+            // Trigger a small, global spring after release rather than per-point jagged waves.
+            if (prevSquish > 0.18 && body.squishIntensity < 0.06) {
+                body.recoilAmplitude = Math.max(body.recoilAmplitude, prevSquish * 18);
+            }
+            body.recoilAmplitude = clamp(body.recoilAmplitude * 0.88, 0, 24);
 
-            var mouseAngle = Math.atan2(mouse.y - body.y, mouse.x - body.x);
+            var targetAngle = body.deformAngle;
+            if (mouse.active && d > 1) targetAngle = Math.atan2(mouse.y - body.y, mouse.x - body.x);
+            body.deformAngle = lerpAngleRad(body.deformAngle, targetAngle, 0.18);
+
+            var press = body.squishIntensity;
+            var spring = (body.recoilAmplitude / baseR) * Math.sin((time % 100) * 14) * 0.18;
+            var breathe = Math.sin((time % 100) * 2.2) * 0.018;
+
+            // Work in deformation-local coordinates.  The body is an ellipse under pressure,
+            // then receives a broad, Gaussian dent and side bulge.  This keeps curvature smooth
+            // and preserves the soft mochi silhouette.
+            var rx = baseR * (1 + press * 0.18 + spring * 0.65 + breathe * 0.6);
+            var ry = baseR * (1 - press * 0.12 - spring * 0.45 + breathe);
+            var ca = Math.cos(body.deformAngle);
+            var sa = Math.sin(body.deformAngle);
 
             for (var i = 0; i < numSegs; i++) {
                 var theta = (i / numSegs) * Math.PI * 2;
+                var localX = Math.cos(theta);
+                var localY = Math.sin(theta);
 
-                // Breathing — use wrapped time for precision
-                var tWrapped = time % 100;
-                var rOffset = Math.sin(tWrapped * 2.0 + theta * 1.5) * 3.0;
+                var sideBulge = Math.pow(Math.abs(localY), 2.2) * press * baseR * 0.055;
+                var frontDent = Math.exp(-Math.pow(theta < Math.PI ? theta : theta - Math.PI * 2, 2) / 0.62) * press * baseR * 0.16;
+                var backEase = Math.exp(-Math.pow(theta - Math.PI, 2) / 1.2) * press * baseR * 0.025;
+                var idleRipple = Math.sin((time % 100) * 1.8 + theta * 2) * baseR * 0.008;
 
-                // Recoil bounce
-                rOffset += Math.sin(tWrapped * 14 + theta * 2) * body.recoilAmplitude;
-
-                // Mouse deformation (only when mouse is active on canvas)
-                if (mouse.active && d < 250) {
-                    var alignment = Math.cos(theta - mouseAngle);
-
-                    if (d < 100) {
-                        var squish = body.squishIntensity;
-                        rOffset -= Math.max(0, alignment) * squish * 32;
-                        rOffset += Math.abs(Math.sin(theta - mouseAngle)) * squish * 18;
-                        rOffset -= Math.max(0, -alignment) * squish * 6;
-                    } else {
-                        rOffset += alignment * body.squishIntensity * 40;
-                    }
-                }
-
-                // Clamp offset to prevent extreme distortion
-                rOffset = clamp(rOffset, -baseR * 0.5, baseR * 0.5);
-                var r = baseR + rOffset;
+                var xLocal = localX * (rx - frontDent + backEase + idleRipple);
+                var yLocal = localY * (ry + sideBulge + idleRipple * 0.4);
 
                 points.push({
-                    x: body.x + Math.cos(theta) * r,
-                    y: body.y + Math.sin(theta) * r
+                    x: body.x + xLocal * ca - yLocal * sa,
+                    y: body.y + xLocal * sa + yLocal * ca
                 });
             }
+
             return points;
         }
 
@@ -342,17 +349,24 @@
 
         function drawSmoothPath(points) {
             var n = points.length;
+            if (n < 3) return;
+
             ctx.beginPath();
-            ctx.moveTo((points[0].x + points[n - 1].x) / 2, (points[0].y + points[n - 1].y) / 2);
+            ctx.moveTo(points[0].x, points[0].y);
             for (var i = 0; i < n; i++) {
-                var p = points[i];
-                var pNext = points[(i + 1) % n];
-                var midX = (p.x + pNext.x) / 2;
-                var midY = (p.y + pNext.y) / 2;
-                ctx.quadraticCurveTo(p.x, p.y, midX, midY);
+                var p0 = points[(i - 1 + n) % n];
+                var p1 = points[i];
+                var p2 = points[(i + 1) % n];
+                var p3 = points[(i + 2) % n];
+                var cp1x = p1.x + (p2.x - p0.x) / 6;
+                var cp1y = p1.y + (p2.y - p0.y) / 6;
+                var cp2x = p2.x - (p3.x - p1.x) / 6;
+                var cp2y = p2.y - (p3.y - p1.y) / 6;
+                ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
             }
             ctx.closePath();
         }
+
 
         function drawBody(points) {
             var baseR = getBaseRadius();
